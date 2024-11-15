@@ -2298,7 +2298,67 @@ func (d *decoder) parseArrayToArray(v reflect.Value, tInfo *typeInfo) error {
 	return err
 }
 
+type MapEntry struct {
+	Key   any
+	Value any
+}
+
+func (d *decoder) parseMapToArray() (interface{}, error) {
+	_, _, val, indefiniteLength := d.getHeadWithIndefiniteLengthFlag()
+	hasSize := !indefiniteLength
+	count := int(val)
+
+	var a []MapEntry
+
+	var k, e interface{}
+	var err, lastErr error
+	keyCount := 0
+	for i := 0; (hasSize && i < count) || (!hasSize && !d.foundBreak()); i++ {
+		// Parse CBOR map key.
+		if k, lastErr = d.parse(true); lastErr != nil {
+			if err == nil {
+				err = lastErr
+			}
+			d.skip()
+			continue
+		}
+
+		// Parse CBOR map value.
+		if e, lastErr = d.parse(true); lastErr != nil {
+			if err == nil {
+				err = lastErr
+			}
+			continue
+		}
+
+		// Add key-value pair to Go map as array.
+		a = append(a, MapEntry{Key: k, Value: e})
+
+		// Detect duplicate map key.
+		if d.dm.dupMapKey == DupMapKeyEnforcedAPF {
+			newKeyCount := len(a)
+			if newKeyCount == keyCount {
+
+				// TODO revisit deleting duplicate keys?
+				// m[k] = nil
+
+				err = &DupMapKeyError{k, i}
+				i++
+				// skip the rest of the map
+				for ; (hasSize && i < count) || (!hasSize && !d.foundBreak()); i++ {
+					d.skip() // Skip map key
+					d.skip() // Skip map value
+				}
+				return a, err
+			}
+			keyCount = newKeyCount
+		}
+	}
+	return a, err
+}
+
 func (d *decoder) parseMap() (interface{}, error) {
+	initialOff := d.off
 	_, _, val, indefiniteLength := d.getHeadWithIndefiniteLengthFlag()
 	hasSize := !indefiniteLength
 	count := int(val)
@@ -2325,6 +2385,8 @@ func (d *decoder) parseMap() (interface{}, error) {
 			}
 			if !converted {
 				if err == nil {
+					d.off = initialOff
+					return d.parseMapToArray()
 					err = &InvalidMapKeyTypeError{rv.Type().String()}
 				}
 				d.skip()
